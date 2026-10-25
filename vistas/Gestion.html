@@ -1,0 +1,448 @@
+<script>
+  /* Iteraciones 2 y 3: clientes, celdas, empleados, novedades y pagos.
+     Usa las utilidades de vistas/App ($, esc, api, apiSesionada, toast, cargando, normalizarPlaca, fechaLocal, Ganchos). */
+
+  const TIPOS_DOCUMENTO = [['CC', 'Cédula de ciudadanía'], ['CE', 'Cédula de extranjería'], ['TI', 'Tarjeta de identidad'], ['PAS', 'Pasaporte'], ['NIT', 'NIT']];
+  const TIPOS_VEHICULO = [['CARRO', 'Carro'], ['MOTO', 'Moto'], ['BICICLETA', 'Bicicleta']];
+  const METODOS_PAGO = [['EFECTIVO', 'Efectivo'], ['TRANSFERENCIA', 'Transferencia'], ['TARJETA', 'Tarjeta']];
+  const TIPOS_NOVEDAD = [['DAÑO', 'Daño'], ['OBJETO OLVIDADO', 'Objeto olvidado'], ['INCIDENTE', 'Incidente'], ['OTRO', 'Otro']];
+  const CLASE_SITUACION = { 'AL DÍA': 'ok', 'POR VENCER': 'warn', 'VENCIDA': 'mal', 'SIN MENSUALIDAD': 'gris' };
+  const CLASE_CELDA = { LIBRE: 'ok', OCUPADA: 'warn', MANTENIMIENTO: 'gris' };
+  const CLASE_NOVEDAD = { 'DAÑO': 'mal', 'INCIDENTE': 'mal', 'OBJETO OLVIDADO': 'warn', 'OTRO': 'gris' };
+
+  /* ================= Utilidades de formularios ================= */
+  function insignia(texto, clase) { return `<span class="insignia ${clase || 'gris'}">${esc(texto)}</span>`; }
+  function placaTag(p) { return p ? `<span class="placa-tag">${esc(p)}</span>` : '<span class="tenue">—</span>'; }
+  function pesos(n) { return '$ ' + Number(n || 0).toLocaleString('es-CO'); }
+  function opciones(lista, seleccionado) {
+    return lista.map(o => {
+      const [valor, texto] = Array.isArray(o) ? o : [o, o];
+      return `<option value="${esc(valor)}"${String(valor) === String(seleccionado) ? ' selected' : ''}>${esc(texto)}</option>`;
+    }).join('');
+  }
+  function leerForm(form) {
+    const datos = {};
+    new FormData(form).forEach((v, k) => { datos[k] = typeof v === 'string' ? v.trim() : v; });
+    form.querySelectorAll('input[type=checkbox]').forEach(c => { datos[c.name] = c.checked; });
+    return datos;
+  }
+  function vacio(columnas, texto) { return `<tr><td colspan="${columnas}" class="vacio">${esc(texto)}</td></tr>`; }
+  function avisarError(e) { if (e && e.codigo !== 401) toast(e.mensaje, 'error'); }
+
+  /** Ejecuta una llamada bloqueando el botón y mostrando el indicador de carga. */
+  async function enviar(boton, fn) {
+    if (boton) boton.disabled = true;
+    cargando(true);
+    try { return await fn(); }
+    finally { if (boton) boton.disabled = false; cargando(false); }
+  }
+
+  /* ================= Ventana emergente ================= */
+  function abrirModal(titulo, html) {
+    $('#modal-titulo').textContent = titulo;
+    $('#modal-cuerpo').innerHTML = html;
+    $('#modal').hidden = false;
+    const primero = $('#modal-cuerpo input:not([type=hidden]):not([readonly]), #modal-cuerpo select');
+    if (primero) primero.focus();
+  }
+  function cerrarModal() { $('#modal').hidden = true; $('#modal-cuerpo').innerHTML = ''; }
+  $('#modal-cerrar').addEventListener('click', cerrarModal);
+  $('#modal').addEventListener('mousedown', ev => { if (ev.target.id === 'modal') cerrarModal(); });
+  document.addEventListener('keydown', ev => { if (ev.key === 'Escape' && !$('#modal').hidden) cerrarModal(); });
+  Ganchos.alSalir = cerrarModal;
+
+  /* ================= Novedades (ambos roles) ================= */
+  let novedades = [];
+  $('#nv-tipo').innerHTML = opciones(TIPOS_NOVEDAD, 'DAÑO');
+
+  Ganchos.novedades = () => { cargarNovedades(); $('#nv-placa').focus(); };
+
+  async function cargarNovedades() {
+    try { novedades = await apiSesionada('apiNovedades', {}); pintarNovedades(); } catch (e) { avisarError(e); }
+  }
+
+  function pintarNovedades() {
+    const filtro = normalizarPlaca($('#nv-buscar').value);
+    const filas = novedades.filter(n => !filtro || n.placa.indexOf(filtro) >= 0);
+    $('#nv-total').textContent = novedades.length;
+    $('#tabla-novedades').innerHTML = filas.length ? filas.map(n => `
+      <tr>
+        <td>${esc(n.fecha_hora)}</td>
+        <td>${placaTag(n.placa)}${n.en_parqueadero ? ' <span class="tenue">dentro</span>' : ''}</td>
+        <td>${insignia(n.tipo, CLASE_NOVEDAD[n.tipo])}</td>
+        <td class="texto">${esc(n.descripcion)}</td>
+        <td>${esc(n.empleado)}</td>
+      </tr>`).join('') : vacio(5, filtro ? 'Ninguna novedad para esa placa' : 'No hay novedades en los últimos 30 días');
+  }
+
+  $('#nv-buscar').addEventListener('input', pintarNovedades);
+  $('#form-novedad').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const boton = ev.target.querySelector('[type=submit]');
+    try {
+      const r = await enviar(boton, () => apiSesionada('apiRegistrarNovedad', {
+        placa: $('#nv-placa').value, tipo: $('#nv-tipo').value, descripcion: $('#nv-descripcion').value
+      }));
+      toast(r.mensaje, 'ok');
+      $('#nv-placa').value = '';
+      $('#nv-descripcion').value = '';
+      cargarNovedades();
+    } catch (e) { avisarError(e); }
+  });
+
+  /* ================= Clientes y vehículos ================= */
+  let clientes = [];
+
+  Ganchos.clientes = () => cargarClientes();
+
+  async function cargarClientes() {
+    try { clientes = await apiSesionada('apiClientes', ''); pintarClientes(); } catch (e) { avisarError(e); }
+  }
+
+  function pintarClientes() {
+    const q = $('#cl-buscar').value.trim().toLowerCase();
+    const qPlaca = normalizarPlaca(q);
+    const filas = clientes.filter(c => !q || (c.nombre + ' ' + c.numero_documento + ' ' + c.telefono).toLowerCase().indexOf(q) >= 0 ||
+      (qPlaca && c.placas.some(p => p.indexOf(qPlaca) >= 0)));
+    $('#cl-total').textContent = clientes.length;
+    $('#tabla-clientes').innerHTML = filas.length ? filas.map(c => `
+      <tr>
+        <td><strong>${esc(c.nombre)}</strong></td>
+        <td>${esc(c.tipo_documento + ' ' + c.numero_documento)}</td>
+        <td>${esc(c.telefono || '—')}</td>
+        <td>${c.placas.length ? c.placas.map(placaTag).join(' ') : '<span class="tenue">—</span>'}</td>
+        <td>${insignia(c.estado, c.estado === 'ACTIVO' ? 'ok' : 'gris')}</td>
+        <td class="derecha"><button class="btn mini" type="button" data-cliente="${c.id_cliente}">Ver</button></td>
+      </tr>`).join('') : vacio(6, q ? 'Ningún cliente coincide con la búsqueda' : 'No hay clientes registrados');
+  }
+
+  $('#cl-buscar').addEventListener('input', pintarClientes);
+  $('#btn-nuevo-cliente').addEventListener('click', () => mostrarCliente(null));
+  $('#tabla-clientes').addEventListener('click', async ev => {
+    const b = ev.target.closest('[data-cliente]');
+    if (!b) return;
+    try { mostrarCliente(await enviar(b, () => apiSesionada('apiCliente', Number(b.dataset.cliente)))); } catch (e) { avisarError(e); }
+  });
+
+  function mostrarCliente(det) {
+    const c = det ? det.cliente : { tipo_documento: 'CC', estado: 'ACTIVO' };
+    abrirModal(det ? c.nombre : 'Nuevo cliente', `
+      <form id="form-cliente" class="form-grid">
+        <input type="hidden" name="id_cliente" value="${esc(c.id_cliente || '')}">
+        <label>Tipo de documento <select name="tipo_documento">${opciones(TIPOS_DOCUMENTO, c.tipo_documento)}</select></label>
+        <label>Número de documento <input name="numero_documento" value="${esc(c.numero_documento || '')}" maxlength="20" required></label>
+        <label>Nombres <input name="nombres" value="${esc(c.nombres || '')}" maxlength="80" required></label>
+        <label>Apellidos <input name="apellidos" value="${esc(c.apellidos || '')}" maxlength="80" required></label>
+        <label>Teléfono <input name="telefono" value="${esc(c.telefono || '')}" maxlength="20" inputmode="tel"></label>
+        <label>Correo <input name="correo" type="email" value="${esc(c.correo || '')}" maxlength="100"></label>
+        <label class="ancho">Dirección <input name="direccion" value="${esc(c.direccion || '')}" maxlength="150"></label>
+        <label>Estado <select name="estado">${opciones([['ACTIVO', 'Activo'], ['INACTIVO', 'Inactivo (no puede ingresar)']], c.estado)}</select></label>
+        <div class="acciones ancho"><button class="btn primario" type="submit">${det ? 'Guardar cambios' : 'Crear cliente'}</button></div>
+      </form>
+      ${det ? seccionVehiculos(det) : '<p class="tenue">Después de crear el cliente podrá agregar sus vehículos.</p>'}`);
+  }
+
+  function seccionVehiculos(det) {
+    const filas = det.vehiculos.map(v => {
+      const m = v.mensualidad;
+      return `
+        <tr>
+          <td>${placaTag(v.placa)}</td>
+          <td>${esc(v.tipo_vehiculo)}</td>
+          <td>${esc([v.marca, v.color].filter(Boolean).join(' · ') || '—')}</td>
+          <td>${insignia(m.estado, CLASE_SITUACION[m.estado])}${m.fecha_fin ? ' <span class="tenue">hasta ' + esc(m.fecha_fin) + (m.celda ? ' · ' + esc(m.celda) : '') + '</span>' : ''}</td>
+          <td class="derecha"><button class="btn mini" type="button" data-editar-vehiculo="${esc(JSON.stringify(v))}">Editar</button></td>
+        </tr>`;
+    }).join('');
+    return `
+      <div class="separador"></div>
+      <h4>Vehículos</h4>
+      <div class="tabla-scroll">
+        <table>
+          <thead><tr><th>Placa</th><th>Tipo</th><th>Marca / color</th><th>Mensualidad</th><th></th></tr></thead>
+          <tbody>${filas || vacio(5, 'Este cliente aún no tiene vehículos')}</tbody>
+        </table>
+      </div>
+      <form id="form-vehiculo" class="form-grid compacto">
+        <input type="hidden" name="id_cliente" value="${det.cliente.id_cliente}">
+        <input type="hidden" name="id_vehiculo" value="">
+        <label>Placa <input name="placa" class="mayus" maxlength="12" required></label>
+        <label>Tipo <select name="tipo_vehiculo">${opciones(TIPOS_VEHICULO, 'CARRO')}</select></label>
+        <label>Marca <input name="marca" maxlength="40"></label>
+        <label>Color <input name="color" maxlength="30"></label>
+        <div class="acciones ancho">
+          <button id="btn-vehiculo" class="btn" type="submit">Agregar vehículo</button>
+          <button id="btn-vehiculo-cancelar" class="btn" type="button" hidden>Cancelar edición</button>
+        </div>
+      </form>`;
+  }
+
+  function limpiarFormVehiculo() {
+    const f = $('#form-vehiculo');
+    f.reset();
+    f.elements.id_vehiculo.value = '';
+    $('#btn-vehiculo').textContent = 'Agregar vehículo';
+    $('#btn-vehiculo-cancelar').hidden = true;
+  }
+
+  /* ================= Celdas ================= */
+  let celdasAdmin = [];
+
+  Ganchos.celdas = () => cargarCeldas();
+
+  async function cargarCeldas() {
+    try { celdasAdmin = await apiSesionada('apiCeldas'); pintarCeldas(); } catch (e) { avisarError(e); }
+  }
+
+  function pintarCeldas() {
+    $('#tabla-celdas').innerHTML = celdasAdmin.length ? celdasAdmin.map(c => `
+      <tr>
+        <td><strong class="codigo-celda">${esc(c.codigo)}</strong></td>
+        <td>${esc(c.tipo_vehiculo)}</td>
+        <td>${esc(c.zona || '—')}</td>
+        <td>${insignia(c.estado, CLASE_CELDA[c.estado])}</td>
+        <td>${placaTag(c.placa_dentro)}</td>
+        <td>${placaTag(c.asignada_a)}</td>
+        <td class="derecha"><button class="btn mini" type="button" data-celda="${c.id_celda}">Editar</button></td>
+      </tr>`).join('') : vacio(7, 'No hay celdas registradas');
+  }
+
+  $('#btn-nueva-celda').addEventListener('click', () => mostrarCelda(null));
+  $('#tabla-celdas').addEventListener('click', ev => {
+    const b = ev.target.closest('[data-celda]');
+    if (b) mostrarCelda(celdasAdmin.find(c => c.id_celda === Number(b.dataset.celda)));
+  });
+
+  function mostrarCelda(c) {
+    const nueva = !c;
+    c = c || { tipo_vehiculo: 'CARRO', estado: 'LIBRE', zona: '' };
+    const ocupada = c.estado === 'OCUPADA';
+    abrirModal(nueva ? 'Nueva celda' : 'Celda ' + c.codigo, `
+      <form id="form-celda" class="form-grid">
+        <input type="hidden" name="id_celda" value="${esc(c.id_celda || '')}">
+        <label>Código <input name="codigo" class="mayus" value="${esc(c.codigo || '')}" maxlength="10" placeholder="A-09" required></label>
+        <label>Tipo de vehículo <select name="tipo_vehiculo">${opciones(TIPOS_VEHICULO, c.tipo_vehiculo)}</select></label>
+        <label>Zona <input name="zona" value="${esc(c.zona)}" maxlength="30" placeholder="Zona A"></label>
+        ${ocupada
+          ? `<input type="hidden" name="estado" value="LIBRE"><p class="ancho alerta warn">Ocupada por ${esc(c.placa_dentro)}: el estado cambia solo al registrar la salida.</p>`
+          : `<label>Estado <select name="estado">${opciones([['LIBRE', 'Libre'], ['MANTENIMIENTO', 'En mantenimiento']], c.estado)}</select></label>`}
+        ${c.asignada_a ? `<p class="ancho tenue">Asignada por mensualidad a ${esc(c.asignada_a)}.</p>` : ''}
+        <div class="acciones ancho"><button class="btn primario" type="submit">${nueva ? 'Crear celda' : 'Guardar cambios'}</button></div>
+      </form>`);
+  }
+
+  /* ================= Empleados ================= */
+  let empleados = [];
+
+  Ganchos.empleados = () => cargarEmpleados();
+
+  async function cargarEmpleados() {
+    try { empleados = await apiSesionada('apiEmpleados'); pintarEmpleados(); } catch (e) { avisarError(e); }
+  }
+
+  function pintarEmpleados() {
+    $('#tabla-empleados').innerHTML = empleados.length ? empleados.map(e => `
+      <tr>
+        <td><strong>${esc(e.nombre)}</strong>${Estado.emp && e.id_empleado === Estado.emp.id_empleado ? ' <span class="tenue">(usted)</span>' : ''}</td>
+        <td><code>${esc(e.username)}</code></td>
+        <td>${esc(e.documento)}</td>
+        <td>${insignia(e.rol === 'ADMINISTRADOR' ? 'Administrador' : 'Operador', e.rol === 'ADMINISTRADOR' ? 'tinta' : 'gris')}</td>
+        <td>${insignia(e.activo ? 'Activo' : 'Inactivo', e.activo ? 'ok' : 'gris')}</td>
+        <td class="derecha"><button class="btn mini" type="button" data-empleado="${e.id_empleado}">Editar</button></td>
+      </tr>`).join('') : vacio(6, 'No hay empleados');
+  }
+
+  $('#btn-nuevo-empleado').addEventListener('click', () => mostrarEmpleado(null));
+  $('#tabla-empleados').addEventListener('click', ev => {
+    const b = ev.target.closest('[data-empleado]');
+    if (b) mostrarEmpleado(empleados.find(e => e.id_empleado === Number(b.dataset.empleado)));
+  });
+
+  function mostrarEmpleado(e) {
+    const nuevo = !e;
+    e = e || { rol: 'OPERADOR', activo: true };
+    abrirModal(nuevo ? 'Nuevo empleado' : e.nombre, `
+      <form id="form-empleado" class="form-grid">
+        <input type="hidden" name="id_empleado" value="${esc(e.id_empleado || '')}">
+        <label>Nombres <input name="nombres" value="${esc(e.nombres || '')}" maxlength="80" required></label>
+        <label>Apellidos <input name="apellidos" value="${esc(e.apellidos || '')}" maxlength="80" required></label>
+        <label>Documento <input name="documento" value="${esc(e.documento || '')}" maxlength="20" required></label>
+        <label>Usuario <input name="username" value="${esc(e.username || '')}" maxlength="40" ${nuevo ? 'required' : 'readonly'}></label>
+        <label>Rol <select name="rol">${opciones([['OPERADOR', 'Operador'], ['ADMINISTRADOR', 'Administrador']], e.rol)}</select></label>
+        ${nuevo
+          ? '<label>Contraseña <input name="password" type="password" minlength="8" autocomplete="new-password" required></label><p class="ancho tenue">Mínimo 8 caracteres, con letras y números.</p>'
+          : `<label class="check"><input name="activo" type="checkbox" ${e.activo ? 'checked' : ''}> Cuenta activa</label>`}
+        <div class="acciones ancho"><button class="btn primario" type="submit">${nuevo ? 'Crear empleado' : 'Guardar cambios'}</button></div>
+      </form>
+      ${nuevo ? '' : `
+        <div class="separador"></div>
+        <h4>Restablecer contraseña</h4>
+        <form id="form-password" class="form-grid compacto">
+          <input type="hidden" name="id_empleado" value="${e.id_empleado}">
+          <label>Nueva contraseña <input name="password" type="password" minlength="8" autocomplete="new-password" required></label>
+          <div class="acciones"><button class="btn" type="submit">Restablecer</button></div>
+        </form>`}`);
+  }
+
+  /* ================= Envíos y acciones dentro de la ventana emergente ================= */
+  $('#modal-cuerpo').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const f = ev.target;
+    const boton = f.querySelector('[type=submit]');
+    const datos = leerForm(f);
+    try {
+      if (f.id === 'form-cliente') {
+        const det = await enviar(boton, () => apiSesionada('apiGuardarCliente', datos));
+        toast('Cliente guardado', 'ok');
+        mostrarCliente(det);
+        cargarClientes();
+      } else if (f.id === 'form-vehiculo') {
+        const det = await enviar(boton, () => apiSesionada('apiGuardarVehiculo', datos));
+        toast('Vehículo guardado', 'ok');
+        mostrarCliente(det);
+        cargarClientes();
+      } else if (f.id === 'form-celda') {
+        celdasAdmin = await enviar(boton, () => apiSesionada('apiGuardarCelda', datos));
+        pintarCeldas();
+        cerrarModal();
+        toast('Celda guardada', 'ok');
+      } else if (f.id === 'form-empleado') {
+        await enviar(boton, () => apiSesionada('apiGuardarEmpleado', datos));
+        cerrarModal();
+        toast('Empleado guardado', 'ok');
+        cargarEmpleados();
+      } else if (f.id === 'form-password') {
+        const r = await enviar(boton, () => apiSesionada('apiRestablecerPassword', Number(datos.id_empleado), datos.password));
+        f.reset();
+        toast(r.mensaje, 'ok');
+      }
+    } catch (e) { avisarError(e); }
+  });
+
+  $('#modal-cuerpo').addEventListener('click', ev => {
+    const editar = ev.target.closest('[data-editar-vehiculo]');
+    if (editar) {
+      const v = JSON.parse(editar.dataset.editarVehiculo);
+      const f = $('#form-vehiculo');
+      f.elements.id_vehiculo.value = v.id_vehiculo;
+      f.elements.placa.value = v.placa;
+      f.elements.tipo_vehiculo.value = v.tipo_vehiculo;
+      f.elements.marca.value = v.marca;
+      f.elements.color.value = v.color;
+      $('#btn-vehiculo').textContent = 'Guardar vehículo';
+      $('#btn-vehiculo-cancelar').hidden = false;
+      f.elements.placa.focus();
+    }
+    if (ev.target.id === 'btn-vehiculo-cancelar') limpiarFormVehiculo();
+  });
+
+  /* ================= Pagos ================= */
+  let consultaPago = null;
+
+  Ganchos.pagos = () => {
+    if (!$('#pg-desde').value) { $('#pg-desde').value = fechaLocal(30); $('#pg-hasta').value = fechaLocal(0); }
+    cargarCartera();
+    cargarPagos();
+    $('#pago-placa').focus();
+  };
+
+  $('#form-pago-buscar').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const placa = normalizarPlaca($('#pago-placa').value);
+    $('#pago-placa').value = placa;
+    if (!placa) return;
+    try {
+      consultaPago = await enviar(ev.target.querySelector('[type=submit]'), () => apiSesionada('apiConsultarPago', placa));
+      pintarConsultaPago(consultaPago);
+    } catch (e) {
+      if (e.codigo !== 401) $('#pago-resultado').innerHTML = `<div class="alerta error">${esc(e.mensaje)}</div>`;
+    }
+  });
+
+  function pintarConsultaPago(q) {
+    const s = q.situacion;
+    const vehiculo = [q.vehiculo.tipo, q.vehiculo.marca, q.vehiculo.color].filter(Boolean).join(' · ');
+    const inactivo = q.cliente && q.cliente.estado === 'INACTIVO';
+    const sinCeldas = !q.celdas.length;
+    $('#pago-resultado').innerHTML = `
+      <div class="ficha compacta ${inactivo || sinCeldas ? 'bloqueada' : ''}">
+        <div class="ficha-grid">
+          ${dato('Placa', placaTag(q.placa))}
+          ${dato('Cliente', esc(q.cliente ? q.cliente.nombre : '—'))}
+          ${dato('Vehículo', esc(vehiculo))}
+          ${dato('Mensualidad', insignia(s.estado, CLASE_SITUACION[s.estado]) + (s.fecha_fin ? ' <span class="tenue">hasta ' + esc(s.fecha_fin) + '</span>' : ''))}
+        </div>
+        ${inactivo ? '<div class="alerta warn">El cliente está INACTIVO: actívelo en Clientes antes de cobrar.</div>' : ''}
+        ${sinCeldas ? `<div class="alerta error">No hay celdas disponibles para ${esc(q.vehiculo.tipo)}. Cree una en Celdas.</div>` : ''}
+        ${inactivo || sinCeldas ? '' : `
+          <form id="form-pago" class="form-grid">
+            <label>Celda asignada <select name="id_celda">${opciones(q.celdas.map(c => [c.id_celda, c.codigo + (c.zona ? ' · ' + c.zona : '')]), q.propuesta.id_celda)}</select></label>
+            <label>Valor (COP) <input name="valor" type="number" min="1000" step="1000" value="${q.propuesta.valor}" required></label>
+            <label>Método de pago <select name="metodo_pago">${opciones(METODOS_PAGO, 'EFECTIVO')}</select></label>
+            <label>Referencia <input name="referencia" maxlength="50" placeholder="Opcional"></label>
+            <p class="ancho periodo">Cubre del <strong>${esc(q.propuesta.fecha_inicio)}</strong> al <strong>${esc(q.propuesta.fecha_fin)}</strong></p>
+            <div class="acciones ancho"><button class="btn exito grande" type="submit">Registrar pago</button></div>
+          </form>`}
+      </div>`;
+  }
+
+  $('#pago-resultado').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    if (ev.target.id !== 'form-pago' || !consultaPago) return;
+    const datos = Object.assign(leerForm(ev.target), { placa: consultaPago.placa });
+    try {
+      const r = await enviar(ev.target.querySelector('[type=submit]'), () => apiSesionada('apiRegistrarPago', datos));
+      $('#pago-resultado').innerHTML = `<div class="alerta ok">✔ ${esc(r.mensaje)}
+        <div class="tenue">${esc(pesos(r.valor))} · ${esc(r.metodo_pago)} · celda ${esc(r.celda)} · registró ${esc(r.empleado)}</div></div>`;
+      $('#pago-placa').value = '';
+      consultaPago = null;
+      toast(r.mensaje, 'ok');
+      cargarCartera();
+      cargarPagos();
+    } catch (e) { avisarError(e); }
+  });
+
+  async function cargarCartera() {
+    try {
+      const filas = await apiSesionada('apiCartera');
+      $('#cartera-total').textContent = filas.length;
+      $('#tabla-cartera').innerHTML = filas.length ? filas.map(c => `
+        <tr>
+          <td>${placaTag(c.placa)}</td>
+          <td>${esc(c.cliente)}${c.telefono ? '<div class="tenue">' + esc(c.telefono) + '</div>' : ''}</td>
+          <td>${esc(c.fecha_fin || '—')}</td>
+          <td>${insignia(c.estado, CLASE_SITUACION[c.estado])}</td>
+          <td class="derecha"><button class="btn mini" type="button" data-cobrar="${esc(c.placa)}">Cobrar</button></td>
+        </tr>`).join('') : vacio(5, 'Todos los clientes están al día');
+    } catch (e) { avisarError(e); }
+  }
+
+  $('#tabla-cartera').addEventListener('click', ev => {
+    const b = ev.target.closest('[data-cobrar]');
+    if (!b) return;
+    $('#pago-placa').value = b.dataset.cobrar;
+    $('#form-pago-buscar').requestSubmit();
+    $('#vista-pagos').scrollIntoView({ behavior: 'smooth' });
+  });
+
+  async function cargarPagos() {
+    try {
+      const r = await apiSesionada('apiPagos', $('#pg-desde').value, $('#pg-hasta').value);
+      $('#pagos-totales').innerHTML = `<span><strong>${r.cantidad}</strong> pago(s)</span><span>Total <strong>${esc(pesos(r.total))}</strong></span>` +
+        r.por_metodo.map(m => `<span>${esc(m.metodo.charAt(0) + m.metodo.slice(1).toLowerCase())} <strong>${esc(pesos(m.total))}</strong></span>`).join('');
+      $('#tabla-pagos').innerHTML = r.filas.length ? r.filas.map(p => `
+        <tr>
+          <td>${esc(p.fecha_pago)}</td>
+          <td>${placaTag(p.placa)}</td>
+          <td>${esc(p.cliente)}</td>
+          <td>${esc(p.periodo)}</td>
+          <td>${esc(p.celda)}</td>
+          <td>${esc(p.metodo_pago)}${p.referencia ? '<div class="tenue">' + esc(p.referencia) + '</div>' : ''}</td>
+          <td class="derecha"><strong>${esc(pesos(p.valor))}</strong></td>
+          <td>${esc(p.empleado)}</td>
+        </tr>`).join('') : vacio(8, 'No hay pagos en ese rango de fechas');
+    } catch (e) { avisarError(e); }
+  }
+
+  $('#form-pagos').addEventListener('submit', ev => { ev.preventDefault(); cargarPagos(); });
+</script>

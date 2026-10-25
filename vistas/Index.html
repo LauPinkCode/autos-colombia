@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <base target="_top">
+  <meta charset="utf-8">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;600;700&family=Barlow+Condensed:wght@600;700&display=swap" rel="stylesheet">
+  <?!= include('vistas/Estilos'); ?>
+</head>
+<body>
+
+  <!-- HU-01: Iniciar sesión -->
+  <section id="vista-login" class="login">
+    <div class="login-marca">
+      <div class="placa placa-xl" aria-hidden="true">
+        <span class="placa-texto">AUT 001</span>
+        <span class="placa-ciudad">AUTOS COLOMBIA</span>
+      </div>
+      <h1>Control de acceso al parqueadero</h1>
+      <p>Entradas, salidas y ocupación de celdas en un solo lugar.</p>
+    </div>
+    <form id="form-login" class="login-form" autocomplete="on">
+      <h2>Iniciar sesión</h2>
+      <p class="tenue">Ingrese con su usuario de empleado.</p>
+      <label>Usuario
+        <input id="login-usuario" name="username" autocomplete="username" required>
+      </label>
+      <label>Contraseña
+        <input id="login-password" name="password" type="password" autocomplete="current-password" required>
+      </label>
+      <div id="login-error" class="alerta error" hidden></div>
+      <button class="btn primario grande" type="submit">Ingresar</button>
+      <p class="legal">Los datos personales se tratan conforme a la Ley 1581 de 2012 (habeas data).</p>
+    </form>
+  </section>
+
+  <div id="app" class="app" hidden>
+    <aside class="sidebar">
+      <div class="logo">
+        <span class="logo-placa">AC</span>
+        <div><strong>Autos Colombia</strong><small>Parqueadero</small></div>
+      </div>
+      <nav class="menu">
+        <a href="#" data-vista="panel" class="activo">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 4h7v7H4zM13 4h7v7h-7zM4 13h7v7H4zM13 13h7v7h-7z"/></svg>Panel</a>
+        <a href="#" data-vista="entrada">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 12h12M11 7l5 5-5 5M20 4v16"/></svg>Registrar entrada</a>
+        <a href="#" data-vista="salida">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 12h12M17 7l5 5-5 5M4 4v16"/></svg>Registrar salida</a>
+        <a href="#" data-vista="novedades">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l9 16H3zM12 10v4M12 17v.5"/></svg>Novedades</a>
+        <span class="menu-titulo solo-admin">Administración</span>
+        <a href="#" data-vista="clientes" class="solo-admin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M9 11a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM2 21v-1a6 6 0 0 1 12 0v1M16 3.5a4 4 0 0 1 0 7M22 21v-1a6 6 0 0 0-4-5.6"/></svg>Clientes</a>
+        <a href="#" data-vista="celdas" class="solo-admin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 5h18v14H3zM9 5v14M15 5v14"/></svg>Celdas</a>
+        <a href="#" data-vista="pagos" class="solo-admin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M2 6h20v12H2zM2 10h20M6 15h4"/></svg>Pagos</a>
+        <a href="#" data-vista="empleados" class="solo-admin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 12a4 4 0 1 0 0-8 4 4 0 0 0 0 8zM4 21v-1a8 8 0 0 1 16 0v1"/></svg>Empleados</a>
+        <a href="#" data-vista="historial" class="solo-admin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 7v5l3 3M21 12a9 9 0 1 1-9-9 9 9 0 0 1 9 9z"/></svg>Historial</a>
+        <a href="#" data-vista="reporte" class="solo-admin">
+          <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 20V10M10 20V4M16 20v-7M22 20H2"/></svg>Reportes</a>
+      </nav>
+      <div class="usuario">
+        <span id="usuario-inicial" class="avatar"></span>
+        <div class="usuario-datos"><strong id="usuario-nombre"></strong><small id="usuario-rol"></small></div>
+        <button id="btn-salir" class="btn-salir" type="button" title="Cerrar sesión">Salir</button>
+      </div>
+    </aside>
+
+    <main class="contenido">
+
+      <!-- HU-05 / HU-06: Panel de parqueadero -->
+      <section id="vista-panel" class="vista">
+        <header class="cabecera">
+          <div>
+            <h2>Panel del parqueadero</h2>
+            <p id="panel-actualizado" class="tenue"></p>
+          </div>
+          <button id="btn-actualizar" class="btn" type="button">Actualizar</button>
+        </header>
+
+        <div class="tarjetas">
+          <div class="tarjeta"><span class="etq">Celdas libres</span><strong id="r-libres">–</strong><small id="r-total" class="tenue"></small></div>
+          <div class="tarjeta destacada"><span class="etq">Celdas ocupadas</span><strong id="r-ocupadas">–</strong><small id="r-mant" class="tenue"></small></div>
+          <div class="tarjeta"><span class="etq">Entradas hoy</span><strong id="r-entradas">–</strong></div>
+          <div class="tarjeta"><span class="etq">Salidas hoy</span><strong id="r-salidas">–</strong></div>
+        </div>
+
+        <div class="bloque">
+          <div class="bloque-cab">
+            <h3>Mapa de celdas</h3>
+            <div class="leyenda">
+              <span class="ley libre">Libre</span>
+              <span class="ley ocupada">Ocupada</span>
+              <span class="ley mantenimiento">Mantenimiento</span>
+            </div>
+          </div>
+          <div id="mapa-celdas" class="mapa"></div>
+          <p class="tenue pista">Toque una celda ocupada para registrar la salida de ese vehículo.</p>
+        </div>
+
+        <div class="bloque">
+          <div class="bloque-cab">
+            <h3>Vehículos en el parqueadero <span id="activos-total" class="contador"></span></h3>
+            <input id="buscar-activos" class="buscar" type="search" placeholder="Buscar por placa">
+          </div>
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Placa</th><th>Propietario</th><th>Celda</th><th>Hora de entrada</th><th>Permanencia</th></tr></thead>
+              <tbody id="tabla-activos"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- HU-02 / HU-03: Registrar entrada -->
+      <section id="vista-entrada" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Registrar entrada</h2>
+            <p class="tenue">Digite la placa, busque el vehículo y confirme.</p>
+          </div>
+        </header>
+        <form id="form-entrada" class="buscador">
+          <label class="placa placa-input">
+            <input id="entrada-placa" placeholder="ABC123" maxlength="12" autocomplete="off" aria-label="Placa" required>
+            <span class="placa-ciudad">COLOMBIA</span>
+          </label>
+          <button class="btn primario grande" type="submit">Buscar</button>
+        </form>
+        <div id="entrada-resultado"></div>
+      </section>
+
+      <!-- HU-04: Registrar salida -->
+      <section id="vista-salida" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Registrar salida</h2>
+            <p class="tenue">Digite la placa o tóquela en el mapa de celdas del panel.</p>
+          </div>
+        </header>
+        <form id="form-salida" class="buscador">
+          <label class="placa placa-input">
+            <input id="salida-placa" placeholder="ABC123" maxlength="12" autocomplete="off" aria-label="Placa" required>
+            <span class="placa-ciudad">COLOMBIA</span>
+          </label>
+          <button class="btn primario grande" type="submit">Buscar</button>
+        </form>
+        <div id="salida-resultado"></div>
+      </section>
+
+      <!-- Iteración 2: Novedades -->
+      <section id="vista-novedades" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Novedades</h2>
+            <p class="tenue">Daños, objetos olvidados e incidentes de cada vehículo.</p>
+          </div>
+        </header>
+        <form id="form-novedad" class="bloque form-grid">
+          <label>Placa <input id="nv-placa" class="mayus" maxlength="12" placeholder="ABC123" autocomplete="off" required></label>
+          <label>Tipo <select id="nv-tipo" required></select></label>
+          <label class="ancho">Descripción <textarea id="nv-descripcion" rows="3" maxlength="1000" placeholder="Qué pasó, dónde y quién lo reportó" required></textarea></label>
+          <div class="acciones ancho"><button class="btn primario" type="submit">Registrar novedad</button></div>
+        </form>
+        <div class="bloque sin-relleno">
+          <div class="bloque-cab relleno">
+            <h3>Últimos 30 días <span id="nv-total" class="contador"></span></h3>
+            <input id="nv-buscar" class="buscar" type="search" placeholder="Filtrar por placa">
+          </div>
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Fecha</th><th>Placa</th><th>Tipo</th><th>Descripción</th><th>Registró</th></tr></thead>
+              <tbody id="tabla-novedades"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Iteración 2: Clientes -->
+      <section id="vista-clientes" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Clientes</h2>
+            <p class="tenue">Usuarios del parqueadero, sus vehículos y el estado de su mensualidad.</p>
+          </div>
+          <button id="btn-nuevo-cliente" class="btn primario" type="button">Nuevo cliente</button>
+        </header>
+        <div class="bloque sin-relleno">
+          <div class="bloque-cab relleno">
+            <h3>Registrados <span id="cl-total" class="contador"></span></h3>
+            <input id="cl-buscar" class="buscar" type="search" placeholder="Nombre, documento o placa">
+          </div>
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Cliente</th><th>Documento</th><th>Teléfono</th><th>Vehículos</th><th>Estado</th><th></th></tr></thead>
+              <tbody id="tabla-clientes"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Iteración 2: Celdas -->
+      <section id="vista-celdas" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Celdas</h2>
+            <p class="tenue">Cree celdas, cambie su zona o márquelas en mantenimiento.</p>
+          </div>
+          <button id="btn-nueva-celda" class="btn primario" type="button">Nueva celda</button>
+        </header>
+        <div class="bloque sin-relleno">
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Código</th><th>Tipo</th><th>Zona</th><th>Estado</th><th>Dentro ahora</th><th>Asignada a</th><th></th></tr></thead>
+              <tbody id="tabla-celdas"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Iteración 3: Pagos -->
+      <section id="vista-pagos" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Pagos de mensualidades</h2>
+            <p class="tenue">Cada pago renueva la mensualidad por un mes.</p>
+          </div>
+        </header>
+        <div class="pagos-grid">
+          <div class="bloque">
+            <h3>Registrar pago</h3>
+            <form id="form-pago-buscar" class="buscador compacto">
+              <label class="placa placa-input mini">
+                <input id="pago-placa" placeholder="ABC123" maxlength="12" autocomplete="off" aria-label="Placa" required>
+                <span class="placa-ciudad">COLOMBIA</span>
+              </label>
+              <button class="btn primario" type="submit">Buscar</button>
+            </form>
+            <div id="pago-resultado"></div>
+          </div>
+          <div class="bloque sin-relleno">
+            <div class="bloque-cab relleno">
+              <h3>Cartera <span id="cartera-total" class="contador"></span></h3>
+              <span class="tenue">Vencidas, por vencer y sin mensualidad</span>
+            </div>
+            <div class="tabla-scroll">
+              <table>
+                <thead><tr><th>Placa</th><th>Cliente</th><th>Vence</th><th>Estado</th><th></th></tr></thead>
+                <tbody id="tabla-cartera"></tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+        <div class="bloque sin-relleno">
+          <form id="form-pagos" class="filtros relleno">
+            <h3 class="crece">Pagos recibidos</h3>
+            <label>Desde <input type="date" id="pg-desde" required></label>
+            <label>Hasta <input type="date" id="pg-hasta" required></label>
+            <button class="btn" type="submit">Consultar</button>
+          </form>
+          <div id="pagos-totales" class="totales"></div>
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Fecha</th><th>Placa</th><th>Cliente</th><th>Periodo</th><th>Celda</th><th>Método</th><th class="derecha">Valor</th><th>Registró</th></tr></thead>
+              <tbody id="tabla-pagos"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- Iteración 2: Empleados -->
+      <section id="vista-empleados" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Empleados</h2>
+            <p class="tenue">Cuentas del personal: rol, estado y contraseña.</p>
+          </div>
+          <button id="btn-nuevo-empleado" class="btn primario" type="button">Nuevo empleado</button>
+        </header>
+        <div class="bloque sin-relleno">
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Nombre</th><th>Usuario</th><th>Documento</th><th>Rol</th><th>Estado</th><th></th></tr></thead>
+              <tbody id="tabla-empleados"></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- HU-07: Historial -->
+      <section id="vista-historial" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Historial de movimientos</h2>
+            <p id="historial-info" class="tenue">Elija el rango de fechas y consulte.</p>
+          </div>
+        </header>
+        <form id="form-historial" class="filtros bloque">
+          <label>Desde <input type="date" id="h-desde" required></label>
+          <label>Hasta <input type="date" id="h-hasta" required></label>
+          <label>Placa <input id="h-placa" placeholder="Opcional"></label>
+          <label>Estado
+            <select id="h-estado">
+              <option value="">Todos</option>
+              <option>ABIERTO</option>
+              <option>CERRADO</option>
+            </select>
+          </label>
+          <button class="btn primario" type="submit">Consultar</button>
+          <button class="btn" type="button" id="btn-csv" disabled>Exportar CSV</button>
+        </form>
+        <div class="bloque sin-relleno">
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Placa</th><th>Propietario</th><th>Celda</th><th>Entrada</th><th>Salida</th><th>Permanencia</th>
+                <th>Estado</th><th>Empleado entrada</th><th>Empleado salida</th><th>Observaciones</th></tr></thead>
+              <tbody id="tabla-historial"><tr><td colspan="10" class="vacio">Sin consultas todavía</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+
+      <!-- HU-08: Reporte -->
+      <section id="vista-reporte" class="vista" hidden>
+        <header class="cabecera">
+          <div>
+            <h2>Reporte de entradas y salidas</h2>
+            <p class="tenue">Totales y permanencia promedio por día.</p>
+          </div>
+        </header>
+        <form id="form-reporte" class="filtros bloque">
+          <label>Desde <input type="date" id="rp-desde" required></label>
+          <label>Hasta <input type="date" id="rp-hasta" required></label>
+          <button class="btn primario" type="submit">Generar</button>
+        </form>
+        <div class="tarjetas" id="reporte-totales" hidden>
+          <div class="tarjeta"><span class="etq">Total entradas</span><strong id="rp-entradas"></strong></div>
+          <div class="tarjeta"><span class="etq">Total salidas</span><strong id="rp-salidas"></strong></div>
+          <div class="tarjeta destacada"><span class="etq">Permanencia promedio</span><strong id="rp-promedio" class="pequeno"></strong></div>
+        </div>
+        <div class="bloque sin-relleno">
+          <div class="tabla-scroll">
+            <table>
+              <thead><tr><th>Fecha</th><th>Entradas</th><th>Salidas</th><th>Permanencia promedio</th><th class="col-barra">Entradas del día</th></tr></thead>
+              <tbody id="tabla-reporte"><tr><td colspan="5" class="vacio">Genere un reporte para ver los datos</td></tr></tbody>
+            </table>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+
+  <div id="modal" class="modal-fondo" hidden>
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="modal-titulo">
+      <div class="modal-cab">
+        <h3 id="modal-titulo"></h3>
+        <button id="modal-cerrar" class="modal-cerrar" type="button" aria-label="Cerrar">×</button>
+      </div>
+      <div id="modal-cuerpo"></div>
+    </div>
+  </div>
+
+  <div id="toast" class="toast" hidden></div>
+  <div id="cargando" class="cargando" hidden><div class="spinner"></div></div>
+
+  <?!= include('vistas/App'); ?>
+  <?!= include('vistas/Gestion'); ?>
+</body>
+</html>

@@ -1,0 +1,418 @@
+<script>
+  /* ================= Estado y utilidades ================= */
+  const Estado = { token: null, emp: null, panel: null, timer: null, historial: null };
+  const $ = sel => document.querySelector(sel);
+  const $$ = sel => Array.from(document.querySelectorAll(sel));
+  /** Funciones que cargan los datos de cada vista al abrirla (las registra vistas/Gestion). */
+  const Ganchos = {};
+
+  const almacen = {
+    get(k) { try { return sessionStorage.getItem(k); } catch (e) { return null; } },
+    set(k, v) { try { sessionStorage.setItem(k, v); } catch (e) {} },
+    del(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
+  };
+
+  function esc(v) {
+    return String(v == null ? '' : v).replace(/[&<>"']/g, c =>
+      ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
+  }
+
+  function normalizarPlaca(p) { return String(p || '').toUpperCase().replace(/[\s-]+/g, ''); }
+
+  function duracion(min) {
+    if (min == null) return '';
+    const d = Math.floor(min / 1440), h = Math.floor((min % 1440) / 60), m = min % 60;
+    return (d ? d + ' d ' : '') + (d || h ? h + ' h ' : '') + m + ' min';
+  }
+
+  function minutosDesde(iso) { return iso ? Math.max(0, Math.floor((Date.now() - Date.parse(iso)) / 60000)) : null; }
+
+  function fechaLocal(diasAtras) {
+    const d = new Date(Date.now() - (diasAtras || 0) * 86400000);
+    return d.getFullYear() + '-' + String(d.getMonth() + 1).padStart(2, '0') + '-' + String(d.getDate()).padStart(2, '0');
+  }
+
+  let toastTimer;
+  function toast(msg, tipo) {
+    const t = $('#toast');
+    t.textContent = msg;
+    t.className = 'toast ' + (tipo || '');
+    t.hidden = false;
+    clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { t.hidden = true; }, 4000);
+  }
+
+  function cargando(si) { $('#cargando').hidden = !si; }
+
+  /** Llama a una función del servidor. Resuelve con data o rechaza con { codigo, mensaje }. */
+  function api(nombre, ...args) {
+    return new Promise((resolve, reject) => {
+      google.script.run
+        .withSuccessHandler(r => {
+          if (r && r.ok) return resolve(r.data);
+          const err = r || { codigo: 500, mensaje: 'Respuesta inválida del servidor' };
+          if (err.codigo === 401 && nombre !== 'apiLogin') cerrarSesion(err.mensaje);
+          reject(err);
+        })
+        .withFailureHandler(e => reject({ codigo: 0, mensaje: 'No hay conexión con el servidor: ' + (e && e.message || e) }))
+        [nombre](...args);
+    });
+  }
+
+  function apiSesionada(nombre, ...args) { return api(nombre, Estado.token, ...args); }
+
+  /* ================= Sesión (HU-01) ================= */
+  $('#form-login').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    const btn = ev.submitter || $('#form-login button');
+    $('#login-error').hidden = true;
+    btn.disabled = true;
+    try {
+      const r = await api('apiLogin', $('#login-usuario').value, $('#login-password').value);
+      Estado.token = r.token;
+      almacen.set('ac_token', r.token);
+      $('#login-password').value = '';
+      entrar(r.empleado);
+    } catch (e) {
+      $('#login-error').textContent = e.mensaje;
+      $('#login-error').hidden = false;
+    } finally {
+      btn.disabled = false;
+    }
+  });
+
+  function entrar(emp) {
+    Estado.emp = emp;
+    $('#usuario-nombre').textContent = emp.nombre;
+    $('#usuario-rol').textContent = emp.rol === 'ADMINISTRADOR' ? 'Administrador' : 'Operador';
+    $('#usuario-inicial').textContent = (emp.nombre || '?').charAt(0).toUpperCase();
+    const esAdmin = emp.rol === 'ADMINISTRADOR';
+    $$('.solo-admin').forEach(el => { el.hidden = !esAdmin; });
+    $('#vista-login').hidden = true;
+    $('#app').hidden = false;
+    ir('panel');
+  }
+
+  function cerrarSesion(mensaje) {
+    Estado.token = null;
+    Estado.emp = null;
+    almacen.del('ac_token');
+    detenerPanel();
+    if (Ganchos.alSalir) Ganchos.alSalir();
+    $('#app').hidden = true;
+    $('#vista-login').hidden = false;
+    $('#login-error').textContent = mensaje || '';
+    $('#login-error').hidden = !mensaje;
+    $('#login-usuario').focus();
+  }
+
+  $('#btn-salir').addEventListener('click', () => cerrarSesion());
+
+  /* ================= Navegación ================= */
+  function ir(vista) {
+    $$('.vista').forEach(v => { v.hidden = v.id !== 'vista-' + vista; });
+    $$('.sidebar a').forEach(a => a.classList.toggle('activo', a.dataset.vista === vista));
+    if (vista === 'panel') iniciarPanel(); else detenerPanel();
+    if (vista === 'entrada') { limpiarFlujo('entrada'); $('#entrada-placa').focus(); }
+    if (vista === 'salida') { limpiarFlujo('salida'); $('#salida-placa').focus(); }
+    if (vista === 'historial' && !$('#h-desde').value) { $('#h-desde').value = fechaLocal(7); $('#h-hasta').value = fechaLocal(0); }
+    if (vista === 'reporte' && !$('#rp-desde').value) { $('#rp-desde').value = fechaLocal(30); $('#rp-hasta').value = fechaLocal(0); }
+    if (Ganchos[vista]) Ganchos[vista]();
+  }
+
+  $$('.sidebar a').forEach(a => a.addEventListener('click', ev => { ev.preventDefault(); ir(a.dataset.vista); }));
+
+  /* ================= Panel (HU-05 / HU-06) ================= */
+  function iniciarPanel() {
+    cargarPanel();
+    detenerPanel();
+    Estado.timer = setInterval(cargarPanel, 30000);   // se actualiza sin recargar la página
+  }
+
+  function detenerPanel() {
+    if (Estado.timer) clearInterval(Estado.timer);
+    Estado.timer = null;
+  }
+
+  async function cargarPanel() {
+    try {
+      Estado.panel = await apiSesionada('apiPanel');
+      const r = Estado.panel.resumen;
+      $('#r-libres').textContent = r.libres;
+      $('#r-ocupadas').textContent = r.ocupadas;
+      $('#r-entradas').textContent = r.entradas_hoy;
+      $('#r-salidas').textContent = r.salidas_hoy;
+      $('#r-total').textContent = 'de ' + r.total + ' celdas';
+      $('#r-mant').textContent = r.mantenimiento ? r.mantenimiento + ' en mantenimiento' : 'ninguna en mantenimiento';
+      $('#panel-actualizado').textContent = 'Actualizado a las ' + new Date().toLocaleTimeString('es-CO', { hour: '2-digit', minute: '2-digit' });
+      pintarMapa();
+      pintarActivos();
+    } catch (e) {
+      if (e.codigo !== 401) toast(e.mensaje, 'error');
+    }
+  }
+
+  function pintarActivos() {
+    if (!Estado.panel) return;
+    const filtro = normalizarPlaca($('#buscar-activos').value);
+    const filas = Estado.panel.activos.filter(a => !filtro || a.placa.indexOf(filtro) >= 0);
+    $('#activos-total').textContent = Estado.panel.activos.length;
+    $('#tabla-activos').innerHTML = filas.length ? filas.map(a => `
+      <tr>
+        <td><span class="placa-tag">${esc(a.placa)}</span></td>
+        <td>${esc(a.propietario)}</td>
+        <td>${esc(a.celda)}</td>
+        <td>${esc(a.fecha_hora_entrada)}</td>
+        <td>${esc(duracion(minutosDesde(a.entrada_iso)))}</td>
+      </tr>`).join('')
+      : `<tr><td colspan="5" class="vacio">${filtro ? 'Ninguna placa coincide con la búsqueda' : 'No hay vehículos en el parqueadero'}</td></tr>`;
+  }
+
+  $('#buscar-activos').addEventListener('input', pintarActivos);
+  $('#btn-actualizar').addEventListener('click', cargarPanel);
+
+  const GRUPOS_CELDAS = [['CARRO', 'Carros'], ['MOTO', 'Motos'], ['BICICLETA', 'Bicicletas']];
+
+  function pintarMapa() {
+    const celdas = Estado.panel.celdas || [];
+    $('#mapa-celdas').innerHTML = GRUPOS_CELDAS.map(([tipo, titulo]) => {
+      const lista = celdas.filter(c => c.tipo === tipo);
+      if (!lista.length) return '';
+      const libres = lista.filter(c => c.estado === 'LIBRE').length;
+      return `
+        <div class="grupo">
+          <div class="grupo-cab"><h4>${titulo}</h4><span class="tenue">${libres} de ${lista.length} libres</span></div>
+          <div class="celdas">${lista.map(celdaHtml).join('')}</div>
+        </div>`;
+    }).join('') || '<p class="tenue">No hay celdas registradas.</p>';
+  }
+
+  function celdaHtml(c) {
+    if (c.estado === 'OCUPADA') {
+      const accion = c.placa ? ` role="button" tabindex="0" data-placa="${esc(c.placa)}" title="Registrar salida de ${esc(c.placa)}"` : '';
+      return `<div class="celda ocupada"${accion}><span class="celda-cod">${esc(c.codigo)}</span><span class="celda-placa">${esc(c.placa || '—')}</span></div>`;
+    }
+    const clase = c.estado === 'MANTENIMIENTO' ? 'mantenimiento' : 'libre';
+    const texto = c.estado === 'MANTENIMIENTO' ? 'Mantenimiento' : 'Libre';
+    return `<div class="celda ${clase}"><span class="celda-cod">${esc(c.codigo)}</span><span class="celda-estado">${texto}</span></div>`;
+  }
+
+  /** Tocar una celda ocupada lleva a "Registrar salida" con la placa ya buscada. */
+  function salidaDesdeMapa(placa) {
+    ir('salida');
+    $('#salida-placa').value = placa;
+    $('#form-salida').requestSubmit();
+  }
+
+  $('#mapa-celdas').addEventListener('click', ev => {
+    const celda = ev.target.closest('[data-placa]');
+    if (celda) salidaDesdeMapa(celda.dataset.placa);
+  });
+  $('#mapa-celdas').addEventListener('keydown', ev => {
+    const celda = ev.target.closest('[data-placa]');
+    if (celda && (ev.key === 'Enter' || ev.key === ' ')) { ev.preventDefault(); salidaDesdeMapa(celda.dataset.placa); }
+  });
+
+  /* ================= Entrada y salida (HU-02, HU-03, HU-04) ================= */
+  function dato(etiqueta, valor) {
+    return `<div class="dato"><span class="lbl">${esc(etiqueta)}</span><div class="val">${valor}</div></div>`;
+  }
+
+  function limpiarFlujo(tipo) {
+    $('#' + tipo + '-placa').value = '';
+    $('#' + tipo + '-resultado').innerHTML = '';
+  }
+
+  function mostrarError(tipo, mensaje) {
+    $('#' + tipo + '-resultado').innerHTML = `<div class="alerta error caja">${esc(mensaje)}</div>`;
+    $('#' + tipo + '-placa').select();
+  }
+
+  function fichaEntrada(f) {
+    const m = f.mensualidad;
+    const vehiculo = [f.vehiculo.tipo, f.vehiculo.marca, f.vehiculo.color].filter(Boolean).join(' · ');
+    return `
+      <div class="ficha ${f.puede_ingresar ? '' : 'bloqueada'}">
+        <div class="ficha-grid">
+          ${dato('Placa', `<span class="placa-tag">${esc(f.placa)}</span>`)}
+          ${dato('Vehículo', esc(vehiculo))}
+          ${dato('Propietario', esc(f.propietario.nombre) + `<div class="tenue">${esc(f.propietario.documento)}</div>`)}
+          ${dato('Mensualidad', m ? esc(m.estado) + (m.vigente ? ' · vence ' + esc(m.fecha_fin) : ' · ' + esc(m.fecha_inicio) + ' a ' + esc(m.fecha_fin)) : 'Sin mensualidad')}
+          ${dato('Celda asignada', f.celda ? esc(f.celda.codigo) + ' <span class="tenue">' + esc(f.celda.zona) + ' · ' + esc(f.celda.estado) + '</span>' : '—')}
+        </div>
+        ${f.alerta ? `<div class="alerta warn">⚠ ${esc(f.alerta)}</div>` : ''}
+        ${f.motivo ? `<div class="alerta error">Entrada bloqueada: ${esc(f.motivo)}</div>` : ''}
+        ${f.puede_ingresar ? `
+          <div class="acciones">
+            <input id="entrada-obs" maxlength="255" placeholder="Observaciones (opcional)">
+            <button id="btn-confirmar-entrada" class="btn exito grande" type="button">Confirmar entrada</button>
+            <button class="btn grande" type="button" data-cancelar="entrada">Cancelar</button>
+          </div>` : `<div class="acciones"><button class="btn" type="button" data-cancelar="entrada">Nueva búsqueda</button></div>`}
+      </div>`;
+  }
+
+  function fichaSalida(f) {
+    const vehiculo = [f.vehiculo.tipo, f.vehiculo.marca, f.vehiculo.color].filter(Boolean).join(' · ');
+    return `
+      <div class="ficha">
+        <div class="ficha-grid">
+          ${dato('Placa', `<span class="placa-tag">${esc(f.placa)}</span>`)}
+          ${dato('Vehículo', esc(vehiculo))}
+          ${dato('Propietario', esc(f.propietario.nombre))}
+          ${dato('Celda', f.celda ? esc(f.celda.codigo) : '—')}
+          ${dato('Hora de entrada', esc(f.fecha_hora_entrada))}
+          ${dato('Tiempo transcurrido', esc(f.permanencia))}
+        </div>
+        <div class="acciones">
+          <input id="salida-obs" maxlength="255" placeholder="Observaciones (opcional)">
+          <button id="btn-confirmar-salida" class="btn exito grande" type="button">Confirmar salida</button>
+          <button class="btn grande" type="button" data-cancelar="salida">Cancelar</button>
+        </div>
+      </div>`;
+  }
+
+  function exito(tipo, r, detalle) {
+    $('#' + tipo + '-resultado').innerHTML = `<div class="alerta ok caja">✔ ${esc(r.mensaje)}<div class="tenue">${esc(detalle)}</div></div>`;
+    $('#' + tipo + '-placa').value = '';
+    $('#' + tipo + '-placa').focus();
+    toast(r.mensaje, 'ok');
+  }
+
+  function flujo(tipo, apiConsulta, apiRegistro, pintar, detalleExito) {
+    let placaActual = null;
+
+    $('#form-' + tipo).addEventListener('submit', async ev => {
+      ev.preventDefault();
+      const placa = normalizarPlaca($('#' + tipo + '-placa').value);
+      $('#' + tipo + '-placa').value = placa;
+      if (!placa) return;
+      cargando(true);
+      try {
+        const f = await apiSesionada(apiConsulta, placa);
+        placaActual = f.placa;
+        $('#' + tipo + '-resultado').innerHTML = pintar(f);
+        const btn = $('#btn-confirmar-' + tipo);
+        if (btn) btn.focus();         // 3 interacciones: placa → Buscar → Confirmar (RNF-04)
+      } catch (e) {
+        if (e.codigo !== 401) mostrarError(tipo, e.mensaje);
+      } finally {
+        cargando(false);
+      }
+    });
+
+    $('#' + tipo + '-resultado').addEventListener('click', async ev => {
+      if (ev.target.dataset.cancelar) { limpiarFlujo(tipo); $('#' + tipo + '-placa').focus(); return; }
+      if (ev.target.id !== 'btn-confirmar-' + tipo) return;
+      ev.target.disabled = true;
+      cargando(true);
+      try {
+        const obs = ($('#' + tipo + '-obs') || {}).value || '';
+        const r = await apiSesionada(apiRegistro, placaActual, obs);
+        exito(tipo, r, detalleExito(r));
+      } catch (e) {
+        if (e.codigo !== 401) mostrarError(tipo, e.mensaje);
+      } finally {
+        cargando(false);
+      }
+    });
+  }
+
+  flujo('entrada', 'apiConsultarEntrada', 'apiRegistrarEntrada', fichaEntrada,
+    r => 'Hora: ' + r.fecha_hora_entrada + ' · Registrado por: ' + r.empleado);
+  flujo('salida', 'apiConsultarSalida', 'apiRegistrarSalida', fichaSalida,
+    r => 'Hora: ' + r.fecha_hora_salida + ' · Permanencia: ' + r.permanencia + ' · Registrado por: ' + r.empleado);
+
+  /* ================= Historial (HU-07) ================= */
+  $('#form-historial').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    cargando(true);
+    try {
+      const r = await apiSesionada('apiHistorial', {
+        desde: $('#h-desde').value, hasta: $('#h-hasta').value,
+        placa: $('#h-placa').value, estado: $('#h-estado').value
+      });
+      Estado.historial = r.filas;
+      $('#historial-info').textContent = r.total + ' movimiento(s)' + (r.truncado ? ' · se muestran los ' + r.filas.length + ' más recientes; acote el rango' : '');
+      $('#btn-csv').disabled = !r.filas.length;
+      $('#tabla-historial').innerHTML = r.filas.length ? r.filas.map(f => `
+        <tr>
+          <td><span class="placa-tag">${esc(f.placa)}</span></td>
+          <td>${esc(f.propietario)}</td>
+          <td>${esc(f.celda)}</td>
+          <td>${esc(f.fecha_hora_entrada)}</td>
+          <td>${esc(f.fecha_hora_salida)}</td>
+          <td>${esc(f.permanencia)}</td>
+          <td><span class="estado ${esc(f.estado)}">${esc(f.estado)}</span></td>
+          <td>${esc(f.empleado_entrada)}</td>
+          <td>${esc(f.empleado_salida)}</td>
+          <td>${esc(f.observaciones)}</td>
+        </tr>`).join('')
+        : '<tr><td colspan="10" class="vacio">No hay movimientos con esos filtros</td></tr>';
+    } catch (e) {
+      if (e.codigo !== 401) toast(e.mensaje, 'error');
+    } finally {
+      cargando(false);
+    }
+  });
+
+  function celdaCsv(v) {
+    let s = String(v == null ? '' : v);
+    if (/^[=+\-@]/.test(s)) s = "'" + s;                 // evita inyección de fórmulas en Excel
+    return /[";\r\n]/.test(s) ? '"' + s.replace(/"/g, '""') + '"' : s;
+  }
+
+  $('#btn-csv').addEventListener('click', () => {
+    const cols = [
+      ['placa', 'Placa'], ['propietario', 'Propietario'], ['celda', 'Celda'], ['fecha_hora_entrada', 'Entrada'],
+      ['fecha_hora_salida', 'Salida'], ['permanencia', 'Permanencia'], ['estado', 'Estado'],
+      ['empleado_entrada', 'Empleado entrada'], ['empleado_salida', 'Empleado salida'], ['observaciones', 'Observaciones']
+    ];
+    const lineas = [cols.map(c => c[1]).join(';')]
+      .concat((Estado.historial || []).map(f => cols.map(c => celdaCsv(f[c[0]])).join(';')));
+    const blob = new Blob(['﻿' + lineas.join('\r\n')], { type: 'text/csv;charset=utf-8' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob);
+    a.download = 'historial_' + $('#h-desde').value + '_a_' + $('#h-hasta').value + '.csv';
+    document.body.appendChild(a);
+    a.click();
+    setTimeout(() => { URL.revokeObjectURL(a.href); a.remove(); }, 1000);
+  });
+
+  /* ================= Reporte (HU-08) ================= */
+  $('#form-reporte').addEventListener('submit', async ev => {
+    ev.preventDefault();
+    cargando(true);
+    try {
+      const r = await apiSesionada('apiReporte', $('#rp-desde').value, $('#rp-hasta').value);
+      $('#reporte-totales').hidden = false;
+      $('#rp-entradas').textContent = r.total_entradas;
+      $('#rp-salidas').textContent = r.total_salidas;
+      $('#rp-promedio').textContent = r.promedio || '—';
+      const max = Math.max(1, ...r.dias.map(d => d.entradas));
+      $('#tabla-reporte').innerHTML = r.dias.slice().reverse().map(d => `
+        <tr>
+          <td>${esc(d.fecha)}</td>
+          <td>${d.entradas}</td>
+          <td>${d.salidas}</td>
+          <td>${esc(d.promedio || '—')}</td>
+          <td><div class="barra" style="width:${(d.entradas / max * 100).toFixed(1)}%" title="${d.entradas} entradas"></div></td>
+        </tr>`).join('');
+    } catch (e) {
+      if (e.codigo !== 401) toast(e.mensaje, 'error');
+    } finally {
+      cargando(false);
+    }
+  });
+
+  /* ================= Arranque ================= */
+  (async function iniciar() {
+    const token = almacen.get('ac_token');
+    if (!token) return $('#login-usuario').focus();
+    Estado.token = token;
+    try {
+      entrar(await api('apiSesion', token));
+    } catch (e) {
+      cerrarSesion(e.codigo === 401 ? e.mensaje : '');
+    }
+  })();
+</script>
